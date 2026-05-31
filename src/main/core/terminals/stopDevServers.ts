@@ -76,6 +76,8 @@ async function stopDevServer({
     interruptRegisteredPty(projectId, server.scopeId, server.terminalId);
   }
 
+  // Optimistically hide the pill after sending the stop signal. If a process ignores Ctrl+C,
+  // the existing port probe has already been torn down and fresh detection requires new output.
   emitDevServerExit(server.scopeId, server.terminalId);
 }
 
