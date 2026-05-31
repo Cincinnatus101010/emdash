@@ -247,14 +247,15 @@ export class LocalTerminalProvider implements TerminalProvider {
     const sessionId = makePtySessionId(this.projectId, this.scopeId, terminalId);
     this.knownSessionIds.delete(sessionId);
     const pty = this.sessions.get(sessionId);
+    this.sessions.delete(sessionId);
+    this.respawnCounts.delete(sessionId);
+    this.shellProfiles.delete(sessionId);
     if (pty) {
       try {
         pty.kill();
       } catch {}
-      this.sessions.delete(sessionId);
       ptySessionRegistry.unregister(sessionId);
     }
-    this.shellProfiles.delete(sessionId);
     if (this.tmux) {
       await killTmuxSession(this.ctx, makeTmuxSessionName(sessionId));
     }

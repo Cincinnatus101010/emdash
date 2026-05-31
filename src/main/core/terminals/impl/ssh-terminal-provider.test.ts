@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IExecutionContext } from '@main/core/execution-context/types';
 import type { PtyExitInfo } from '@main/core/pty/pty';
+import { openSsh2Pty } from '@main/core/pty/ssh2-pty';
 import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
 import { makePtySessionId } from '@shared/ptySessionId';
 import type { Terminal } from '@shared/terminals';
@@ -8,12 +9,14 @@ import { SshTerminalProvider } from './ssh-terminal-provider';
 
 const ptyMock = vi.hoisted(() => ({
   exitHandlers: [] as Array<(info: PtyExitInfo) => void>,
+  sessions: [] as Array<{
+    kill: ReturnType<typeof vi.fn>;
+  }>,
 }));
 
 vi.mock('@main/core/pty/ssh2-pty', () => ({
-  openSsh2Pty: vi.fn(async () => ({
-    success: true,
-    data: {
+  openSsh2Pty: vi.fn(async () => {
+    const session = {
       write: vi.fn(),
       resize: vi.fn(),
       kill: vi.fn(),
@@ -21,8 +24,13 @@ vi.mock('@main/core/pty/ssh2-pty', () => ({
       onExit: vi.fn((handler: (info: PtyExitInfo) => void) => {
         ptyMock.exitHandlers.push(handler);
       }),
-    },
-  })),
+    };
+    ptyMock.sessions.push(session);
+    return {
+      success: true,
+      data: session,
+    };
+  }),
 }));
 
 vi.mock('@main/core/pty/pty-session-registry', () => ({
@@ -67,7 +75,9 @@ const proxy = {
 
 describe('SshTerminalProvider', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     ptyMock.exitHandlers.length = 0;
+    ptyMock.sessions.length = 0;
     proxy.getRemoteShellProfile = vi.fn(async () => ({
       shell: '/bin/bash',
       env: { PATH: '/usr/bin', HOME: '/home/me' },
@@ -99,5 +109,34 @@ describe('SshTerminalProvider', () => {
     expect(
       (provider as unknown as { shellProfiles: Map<string, unknown> }).shellProfiles.has(sessionId)
     ).toBe(false);
+  });
+
+  it('does not respawn when a manual terminal kill exits synchronously', async () => {
+    vi.useFakeTimers();
+    try {
+      const provider = new SshTerminalProvider({
+        projectId: terminal.projectId,
+        scopeId: terminal.taskId,
+        taskPath: '/repo',
+        ctx,
+        proxy,
+        connectionId: 'ssh-1',
+      });
+
+      await provider.spawnTerminal(terminal);
+
+      const pty = ptyMock.sessions[0];
+      pty.kill.mockImplementation(() => {
+        for (const handler of [...ptyMock.exitHandlers]) handler({ signal: 'SIGTERM' });
+      });
+      vi.mocked(openSsh2Pty).mockClear();
+
+      await provider.killTerminal(terminal.id);
+      await vi.advanceTimersByTimeAsync(600);
+
+      expect(openSsh2Pty).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

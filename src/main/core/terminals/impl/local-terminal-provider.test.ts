@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IExecutionContext } from '@main/core/execution-context/types';
+import { spawnLocalPty } from '@main/core/pty/local-pty';
 import type { PtyExitInfo } from '@main/core/pty/pty';
 import { makePtySessionId } from '@shared/ptySessionId';
 import type { Terminal } from '@shared/terminals';
@@ -7,18 +8,25 @@ import { LocalTerminalProvider } from './local-terminal-provider';
 
 const ptyMock = vi.hoisted(() => ({
   exitHandlers: [] as Array<(info: PtyExitInfo) => void>,
+  sessions: [] as Array<{
+    kill: ReturnType<typeof vi.fn>;
+  }>,
 }));
 
 vi.mock('@main/core/pty/local-pty', () => ({
-  spawnLocalPty: vi.fn(() => ({
-    write: vi.fn(),
-    resize: vi.fn(),
-    kill: vi.fn(),
-    onData: vi.fn(),
-    onExit: vi.fn((handler: (info: PtyExitInfo) => void) => {
-      ptyMock.exitHandlers.push(handler);
-    }),
-  })),
+  spawnLocalPty: vi.fn(() => {
+    const session = {
+      write: vi.fn(),
+      resize: vi.fn(),
+      kill: vi.fn(),
+      onData: vi.fn(),
+      onExit: vi.fn((handler: (info: PtyExitInfo) => void) => {
+        ptyMock.exitHandlers.push(handler);
+      }),
+    };
+    ptyMock.sessions.push(session);
+    return session;
+  }),
 }));
 
 vi.mock('@main/core/pty/pty-session-registry', () => ({
@@ -49,7 +57,9 @@ const ctx = {
 
 describe('LocalTerminalProvider', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     ptyMock.exitHandlers.length = 0;
+    ptyMock.sessions.length = 0;
   });
 
   it('cleans up cached shell profiles after a non-respawned exit', async () => {
@@ -75,5 +85,32 @@ describe('LocalTerminalProvider', () => {
     expect(
       (provider as unknown as { shellProfiles: Map<string, unknown> }).shellProfiles.has(sessionId)
     ).toBe(false);
+  });
+
+  it('does not respawn when a manual terminal kill exits synchronously', async () => {
+    vi.useFakeTimers();
+    try {
+      const provider = new LocalTerminalProvider({
+        projectId: terminal.projectId,
+        scopeId: terminal.taskId,
+        taskPath: '/repo',
+        ctx,
+      });
+
+      await provider.spawnTerminal(terminal);
+
+      const pty = ptyMock.sessions[0];
+      pty.kill.mockImplementation(() => {
+        for (const handler of [...ptyMock.exitHandlers]) handler({ signal: 'SIGTERM' });
+      });
+      vi.mocked(spawnLocalPty).mockClear();
+
+      await provider.killTerminal(terminal.id);
+      await vi.advanceTimersByTimeAsync(600);
+
+      expect(spawnLocalPty).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
