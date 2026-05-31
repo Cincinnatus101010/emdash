@@ -1,8 +1,10 @@
-import { ExternalLink, Globe } from 'lucide-react';
+import { ExternalLink, Globe, Square } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
+import { useState } from 'react';
 import { rpc } from '@renderer/lib/ipc';
+import { Button } from '@renderer/lib/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
-import { useDevServers } from '../task-view-context';
+import { useDevServers, useWorkspaceId } from '../task-view-context';
 
 function formatUrl(url: string): string {
   try {
@@ -14,20 +16,40 @@ function formatUrl(url: string): string {
 }
 
 export const DevServerPills = observer(function DevServerPills({
-  projectId: _projectId,
-  taskId: _taskId,
+  projectId,
+  taskId,
 }: {
   projectId: string;
   taskId: string;
 }) {
-  const urls = useDevServers().urls;
+  const workspaceId = useWorkspaceId();
+  const devServers = useDevServers();
+  const entries = devServers.entries;
+  const [isStopping, setIsStopping] = useState(false);
 
-  if (urls.length === 0) return null;
+  const handleStopAll = async () => {
+    if (isStopping || entries.length === 0) return;
+    setIsStopping(true);
+    try {
+      await rpc.terminals.stopDevServers({
+        projectId,
+        taskId,
+        workspaceId,
+        servers: entries.map(({ scopeId, terminalId }) => ({ scopeId, terminalId })),
+      });
+    } catch {
+      // Best-effort action; the pills stay visible if the backend cannot stop a server.
+    } finally {
+      setIsStopping(false);
+    }
+  };
+
+  if (entries.length === 0) return null;
 
   return (
     <>
-      {urls.map((url) => (
-        <Tooltip key={url}>
+      {entries.map(({ scopeId, terminalId, url }) => (
+        <Tooltip key={`${scopeId}:${terminalId}`}>
           <TooltipTrigger>
             <button
               type="button"
@@ -44,6 +66,23 @@ export const DevServerPills = observer(function DevServerPills({
           </TooltipContent>
         </Tooltip>
       ))}
+      <Tooltip>
+        <TooltipTrigger>
+          <Button
+            variant="destructive"
+            size="sm"
+            className="h-7 gap-1.5 text-xs"
+            disabled={isStopping}
+            onClick={() => void handleStopAll()}
+          >
+            <Square className="size-3 fill-current" />
+            {isStopping ? 'Stopping...' : 'Stop all'}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="text-xs">
+          Stop all dev servers shown for this task
+        </TooltipContent>
+      </Tooltip>
     </>
   );
 });

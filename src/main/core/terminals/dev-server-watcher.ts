@@ -10,6 +10,11 @@ const PROBE_FAILURES_TO_CLOSE = 2;
 
 const URL_PATTERN = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d{2,5})?(?:\/\S*)?/;
 const MAX_BUFFER = 4096;
+const activeDevServerCleanups = new Map<string, () => void>();
+
+function devServerKey(scopeId: string, terminalId: string): string {
+  return `${scopeId}:${terminalId}`;
+}
 
 function normalizeUrl(raw: string): string {
   return raw.replace('0.0.0.0', '127.0.0.1');
@@ -79,6 +84,13 @@ function startProbe(url: string, onClosed: () => void): () => void {
   };
 }
 
+export function clearTerminalDevServer(scopeId: string, terminalId: string): boolean {
+  const cleanup = activeDevServerCleanups.get(devServerKey(scopeId, terminalId));
+  if (!cleanup) return false;
+  cleanup();
+  return true;
+}
+
 export function wireTerminalDevServerWatcher({
   pty,
   scopeId,
@@ -94,11 +106,13 @@ export function wireTerminalDevServerWatcher({
   let buffer = '';
   let found = false;
   let stopProbe: (() => void) | null = null;
+  const activeKey = devServerKey(scopeId, terminalId);
 
   const cleanup = () => {
     buffer = '';
     stopProbe?.();
     stopProbe = null;
+    activeDevServerCleanups.delete(activeKey);
     if (found) {
       found = false;
       events.emit(hostPreviewEventChannel, { type: 'exit', taskId: scopeId, terminalId });
@@ -120,6 +134,7 @@ export function wireTerminalDevServerWatcher({
     if (!match) return;
 
     found = true;
+    activeDevServerCleanups.set(activeKey, cleanup);
     const url = normalizeUrl(match[0]);
     events.emit(hostPreviewEventChannel, { type: 'url', taskId: scopeId, terminalId, url });
 
